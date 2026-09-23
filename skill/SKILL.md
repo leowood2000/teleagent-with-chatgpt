@@ -6,6 +6,16 @@ description: >
   ChatGPT 通过 OAuth 保护的只读 MCP 连接按需读取工作区文件。当用户说
   「使用 TeleAgent with ChatGPT ...」「连接 ChatGPT」「用 ChatGPT 规划」、
   要求断开 ChatGPT、或要通过 ChatGPT 规划循环完成编码任务时使用。
+name_cn: TeleAgent with ChatGPT
+description_cn: 把 ChatGPT 网页版变成编码任务的规划与审查大脑，TeleAgent 负责执行；含连接配置与日常协作循环。
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: 'a0c4a0f2-666f-4e01-bddf-28c2391a387d'
+  PropagateID: 'a0c4a0f2-666f-4e01-bddf-28c2391a387d'
+  ReservedCode1: '489a4a00-9b8c-472b-b5cd-f97b0a2519ec'
+  ReservedCode2: '489a4a00-9b8c-472b-b5cd-f97b0a2519ec'
 ---
 
 # TeleAgent with ChatGPT

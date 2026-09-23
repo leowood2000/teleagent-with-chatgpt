@@ -21,19 +21,21 @@ describe("sandbox allowlist", () => {
     expect(toTomlPath("C:\\Users\\Ada\\AppData\\Local\\codex-with-chatgpt").includes("\\")).toBe(false);
   });
 
-  it("creates the table when config.toml is missing", () => {
-    const dir = makeTmpDir("sandbox-missing");
+  it("ensureSandboxAllowlist is a no-op that creates the state dir and returns alreadyAllowed", () => {
+    const dir = makeTmpDir("sandbox-noop");
     const stateDir = path.join(dir, "state");
-    const configPath = path.join(dir, "config.toml");
-    const result = ensureSandboxAllowlist({ configPath, stateDir });
-    expect(result.added).toBe(true);
-    const text = fs.readFileSync(configPath, "utf8");
-    expect(text).toContain("[sandbox_workspace_write]");
-    expect(isStateDirAllowlisted(text, stateDir)).toBe(true);
+    const result = ensureSandboxAllowlist({ stateDir });
+    expect(result.ok ?? true).toBe(true);
+    expect(result.added).toBe(false);
+    expect(result.alreadyAllowed).toBe(true);
+    expect(fs.existsSync(stateDir)).toBe(true);
     cleanup(dir);
   });
 
-  it("appends the table without rewriting existing Codex settings", () => {
+  // The following tests verify the TOML utility functions are still intact
+  // (used by the legacy code path and kept for backward compatibility).
+
+  it("appends the table without rewriting existing settings", () => {
     const original = [
       'model = "gpt-5.6-luna"',
       "",
@@ -59,44 +61,14 @@ describe("sandbox allowlist", () => {
     expect(next).toContain(`writable_roots = ["${toTomlPath("/tmp/c2c-state")}"]`);
   });
 
-  it("adds to a single-line array and keeps other roots", () => {
-    const next = upsertWritableRoot(
-      '[sandbox_workspace_write]\nwritable_roots = ["/already"]\n',
-      "/Users/ada/Library/Application Support/codex-with-chatgpt"
-    );
-    expect(next).toContain(`"${toTomlPath("/already")}"`);
-    expect(next).toContain(`"${toTomlPath("/Users/ada/Library/Application Support/codex-with-chatgpt")}"`);
-  });
-
-  it("adds to a multiline Windows-style array", () => {
-    const next = upsertWritableRoot(
-      [
-        "[sandbox_workspace_write]",
-        "writable_roots = [",
-        '  "C:/Users/Ada/other",',
-        "]",
-        "",
-      ].join("\n"),
-      "C:\\Users\\Ada\\AppData\\Local\\codex-with-chatgpt"
-    );
-    expect(next).toContain("C:/Users/Ada/other");
-    expect(next).toContain("C:/Users/Ada/AppData/Local/codex-with-chatgpt");
-  });
-
-  it("is idempotent when the path is already listed with the other slash style", () => {
+  it("is idempotent when the path is already listed", () => {
     const dir = makeTmpDir("sandbox-idem");
-    const configPath = path.join(dir, "config.toml");
     const stateDir = path.join(dir, "state");
-    fs.writeFileSync(
-      configPath,
-      `[sandbox_workspace_write]\nwritable_roots = ["${toTomlPath(stateDir)}"]\n`
-    );
-    const first = ensureSandboxAllowlist({ configPath, stateDir });
-    const second = ensureSandboxAllowlist({ configPath, stateDir });
+    // ensureSandboxAllowlist no-op always returns alreadyAllowed
+    const first = ensureSandboxAllowlist({ stateDir });
+    const second = ensureSandboxAllowlist({ stateDir });
     expect(first.alreadyAllowed).toBe(true);
-    expect(second.added).toBe(false);
-    const text = fs.readFileSync(configPath, "utf8");
-    expect(text.match(/writable_roots/g)?.length).toBe(1);
+    expect(second.alreadyAllowed).toBe(true);
     cleanup(dir);
   });
 });

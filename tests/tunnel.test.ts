@@ -56,6 +56,12 @@ function announceUrl(child: FakeCloudflaredProcess): void {
   child.stderr.write(`INF ${QUICK_URL}\n`);
 }
 
+function announceRegistered(child: FakeCloudflaredProcess): void {
+  child.stderr.write(
+    "INF Registered tunnel connection connIndex=0 connection=afd78110-1646-43d4-be82-9015aa04f18f event=0 ip=2606:4700:a0::7 location=lax11 protocol=http2\n"
+  );
+}
+
 function healthResponse(): Response {
   return new Response(JSON.stringify({ service: "c2c-bridge", status: "ok" }), { status: 200 });
 }
@@ -216,6 +222,55 @@ describe("CloudflaredQuickTunnel", () => {
     expect(calls).toBe(2);
     expect(cancelBody).toHaveBeenCalledTimes(1);
     await tunnel.stop();
+  });
+
+  it("falls back to registered-only when public health never succeeds but cloudflared registered", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("fetch failed");
+    });
+    const { child, tunnel } = setupTunnel(fetchImpl, 100);
+    const starting = tunnel.start(3333);
+    announceUrl(child);
+    announceRegistered(child);
+
+    await expect(starting).resolves.toBe(QUICK_URL);
+    expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(tunnel.status()).toMatchObject({
+      running: true,
+      url: QUICK_URL,
+      verification: "registered-only",
+    });
+    await tunnel.stop();
+    expect(tunnel.status()).toMatchObject({ running: false, url: null, verification: null });
+  });
+
+  it("prefers public verification over the registered fallback", async () => {
+    let calls = 0;
+    const { child, tunnel } = setupTunnel(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("fetch failed");
+      return healthResponse();
+    }, 2_000);
+    const starting = tunnel.start(3333);
+    announceUrl(child);
+    announceRegistered(child);
+
+    await expect(starting).resolves.toBe(QUICK_URL);
+    expect(tunnel.status()).toMatchObject({ running: true, url: QUICK_URL, verification: "public-verified" });
+    await tunnel.stop();
+  });
+
+  it("still times out without registration when public health never succeeds", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("fetch failed");
+    });
+    const { child, tunnel } = setupTunnel(fetchImpl, 100);
+    const starting = tunnel.start(3333);
+    announceUrl(child); // URL, but never "Registered tunnel connection"
+
+    await expect(starting).rejects.toThrow(/timed out/i);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(tunnel.status()).toMatchObject({ running: false, url: null });
   });
 });
 

@@ -13,20 +13,20 @@ INIT → PLAN → EXECUTING → EXECUTED → REVIEW → PLAN | DONE | BLOCKED | 
 
 | State | Sender | Meaning |
 | --- | --- | --- |
-| INIT | Codex | New task; asks ChatGPT to inspect + plan |
+| INIT | TeleAgent | New task; asks ChatGPT to inspect + plan |
 | PLAN | ChatGPT | Executable plan for the next iteration |
-| EXECUTING | Codex | (optional) execution in progress |
-| EXECUTED | Codex | Iteration finished; metadata only |
+| EXECUTING | TeleAgent | (optional) execution in progress |
+| EXECUTED | TeleAgent | Iteration finished; metadata only |
 | REVIEW | ChatGPT | (implicit) ChatGPT is inspecting via MCP |
 | DONE | ChatGPT | Success criteria met |
 | BLOCKED | ChatGPT | Cannot proceed; contains reason |
 | ERROR | either | Protocol/infrastructure failure |
-| HANDOFF | Codex | Continuation brief sent to a replacement conversation |
+| HANDOFF | TeleAgent | Continuation brief sent to a replacement conversation |
 
-There is no `STATE: RESUME`. If Codex restarts mid-task, it reads a **local
+There is no `STATE: RESUME`. If TeleAgent restarts mid-task, it reads a **local
 checkpoint** on the session file (`protocolState`, `waitingFor`, goal, issues,
 next step). Those values are not ChatGPT protocol states. ChatGPT still sees
-only the table above. If the original chat is gone, Codex sends HANDOFF
+only the table above. If the original chat is gone, TeleAgent sends HANDOFF
 built from the checkpoint (never from logs).
 
 Local checkpoint values (session only):
@@ -35,7 +35,7 @@ Local checkpoint values (session only):
 | --- | --- |
 | `INIT` | INIT sent; waiting for PLAN |
 | `PLAN_RECEIVED` | PLAN in hand; not finished executing |
-| `EXECUTING` | Codex is applying the current PLAN |
+| `EXECUTING` | TeleAgent is applying the current PLAN |
 | `EXECUTED_LOCAL` | Recorded locally; EXECUTED not yet typed |
 | `EXECUTED_SENT` | EXECUTED typed; waiting for review |
 | `DONE` / `BLOCKED` | Terminal; DONE should `--clear-checkpoint` |
@@ -51,7 +51,7 @@ just to resume.
 Every control message starts with `[C2C]` and key-value headers, then sections.
 Keep messages < 1 KB. No diffs, no logs, no file bodies.
 
-### INIT (Codex → ChatGPT)
+### INIT (TeleAgent → ChatGPT)
 
 ```
 [C2C]
@@ -63,11 +63,11 @@ GOAL:
 Implement dark mode.
 
 INSTRUCTION:
-Inspect the connected workspace through Codex with ChatGPT MCP.
-Create an implementation plan for Codex.
+Inspect the connected workspace through TeleAgent with ChatGPT MCP.
+Create an implementation plan for TeleAgent.
 ```
 
-### PLAN (ChatGPT → Codex)
+### PLAN (ChatGPT → TeleAgent)
 
 ```
 [C2C]
@@ -98,7 +98,7 @@ SUCCESS_CRITERIA:
 
 Plans must be finite, concrete, executable. Not 40-step epics.
 
-### EXECUTED (Codex → ChatGPT)
+### EXECUTED (TeleAgent → ChatGPT)
 
 ```
 [C2C]
@@ -120,17 +120,17 @@ If execution_output lists a readable item for this iteration, list then read it.
 If status is restricted, ignore it and review from git_diff.
 ```
 
-Before sending EXECUTED, Codex records the iteration:
+Before sending EXECUTED, TeleAgent records the iteration:
 `c2c record --task c2c_f81a --iteration 1 --changed-files ... --tests ... --exit-status ok`
 and, when a test/build/lint/typecheck was run, `--command` plus `--output-file`.
 ChatGPT reads metadata via `execution_summary` / `test_status`. Command output
-is a separate opt-in: `execution_output` (`list` then `read`). Codex nominates
+is a separate opt-in: `execution_output` (`list` then `read`). TeleAgent nominates
 the log; a **local sanitizer** decides whether ChatGPT may see the body
 (tokens/paths redacted; private keys withheld entirely; size/line caps).
 Restricted items appear in `list` with no body. Old records without output
 stay valid. Never paste logs into the control message.
 
-### DONE / BLOCKED (ChatGPT → Codex)
+### DONE / BLOCKED (ChatGPT → TeleAgent)
 
 ```
 [C2C]
@@ -155,18 +155,18 @@ NEEDS:
 ...
 ```
 
-### HANDOFF (Codex → new ChatGPT conversation)
+### HANDOFF (TeleAgent → new ChatGPT conversation)
 
 `c2c session --json` → `conversation.mode` chooses how chats are grouped.
 
-- **long-chat:** one long-lived C2C conversation per workspace. Codex opens a
-  replacement chat only when the user asks, the old chat lags, or the chat was
-  lost.
-- **project:** one ChatGPT Project (collection) per workspace. A new Codex
-  conversation starts a new chat **inside that Project**. The same Codex
-  conversation keeps using its saved chat URL.
+- **long-chat:** one long-lived C2C conversation per workspace. TeleAgent opens a
+    replacement chat only when the user asks, the old chat lags, or the chat was
+    lost.
+- **project:** one ChatGPT Project (collection) per workspace. A new TeleAgent
+    conversation starts a new chat **inside that Project**. The same TeleAgent
+    conversation keeps using its saved chat URL.
 
-Right after the boot prompt, Codex sends a HANDOFF so the new chat can
+Right after the boot prompt, TeleAgent sends a HANDOFF so the new chat can
 continue — a brief, never a data dump (the new chat re-reads code via MCP).
 Project instructions and project-only memory hold durable workspace identity.
 HANDOFF still wins for the current task:
@@ -199,7 +199,7 @@ Independently review iteration 4 via git_diff and reply PLAN or DONE.
 
 ## Loop limits
 
-`maxIterations` (default 12, configurable in `.c2c.json`). When reached, Codex
+`maxIterations` (default 12, configurable in `.c2c.json`). When reached, TeleAgent
 pauses and asks the user whether to continue.
 
 ## Boot Prompt
@@ -207,31 +207,31 @@ pauses and asks the user whether to continue.
 Send once at the start of every new C2C conversation:
 
 ```
-You are the planning and review layer of a Codex coding session.
+You are the planning and review layer of a TeleAgent coding session.
 
-Codex owns execution.
+TeleAgent owns execution.
 You own high-level reasoning, planning and review.
 
 You have access to the current local workspace through the
-"Codex with ChatGPT" MCP connector.
+"TeleAgent with ChatGPT" MCP connector.
 
 Rules:
 
-1. Do not ask Codex to paste files that are available through MCP.
+1. Do not ask TeleAgent to paste files that are available through MCP.
 2. Inspect only the files needed for the task.
 3. Use MCP to inspect current code, git status and diff.
 4. Produce concise executable plans.
-5. Codex will execute your plan using its own harness.
-6. After Codex reports EXECUTED, independently inspect the diff.
+5. TeleAgent will execute your plan using its own harness.
+6. After TeleAgent reports EXECUTED, independently inspect the diff.
    If execution_output lists a readable item for this iteration, list
    then read it. If status is restricted, ignore the body and review
    from git.
-7. Do not assume an implementation succeeded just because Codex says so.
+7. Do not assume an implementation succeeded just because TeleAgent says so.
 8. Continue until the implementation satisfies the success criteria.
 9. Avoid unnecessary rewrites.
 10. Return C2C structured control messages.
 11. Be substantive. PLAN and review replies must carry enough signal for
-    Codex to act on: rationale, per-file natural-language suggestions
+    TeleAgent to act on: rationale, per-file natural-language suggestions
     (which file, what to change and why), risks worth checking, and test
     advice. Never reply with a bare one-liner. Substance over length —
     but do not generate 40-step epics either.
@@ -250,7 +250,7 @@ Never put a public or temporary URL in the instructions — only the
 connector **name**.
 
 ```
-You are the planning and review layer for one local workspace. Codex executes.
+You are the planning and review layer for one local workspace. TeleAgent executes.
 
 This Project is bound only to:
 - Workspace name: {{workspace_name}}
@@ -258,7 +258,7 @@ This Project is bound only to:
 - Connector (use this one only): {{connector_name}}
 
 When you call tools, use ONLY that connector. Do not use any other
-Codex with ChatGPT connector. If workspace_info names a different
+TeleAgent with ChatGPT connector. If workspace_info names a different
 workspace, stop. Do not plan. Do not use this Project's memory.
 
 Read code, git, diffs, and any released command output through that

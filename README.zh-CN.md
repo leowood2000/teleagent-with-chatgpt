@@ -1,61 +1,75 @@
-# Codex with ChatGPT
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: '83686353-0023-4eb9-b228-507bbf323a79'
+  PropagateID: '83686353-0023-4eb9-b228-507bbf323a79'
+  ReservedCode1: '300ee346-3dcd-46ca-b502-fb048b6a3f45'
+  ReservedCode2: '300ee346-3dcd-46ca-b502-fb048b6a3f45'
+---
+
+# TeleAgent with ChatGPT
 
 [English](README.md) | **简体中文**
 
-> ChatGPT 负责思考，Codex 负责干活。
+> ChatGPT 负责思考，TeleAgent 负责干活。
 
 ## 解决什么问题
 
-ChatGPT 付费订阅的网页版额度大量闲置，Codex 却在消耗紧张的 API 额度做
-规划和 Review。本项目把"思考"交给你已付费的网页版 ChatGPT，Codex 只负责
+ChatGPT 付费订阅的网页版额度大量闲置，TeleAgent 却在消耗紧张的 API 额度做
+规划和 Review。本项目把“思考”交给你已付费的网页版 ChatGPT，TeleAgent 只负责
 执行。不用 API Key、不搞逆向代理——官方网页 + 只读 MCP 桥接。
 
 ## 这是什么
 
-把 ChatGPT 网页版变成 Codex 编码会话的"规划与审查大脑"，而执行权完全保留在
-Codex 手里。你的仓库永远不会被上传——ChatGPT 通过一条安全的、OAuth 保护的
+把 ChatGPT 网页版变成 TeleAgent 编码会话的"规划与审查大脑"，而执行权完全保留在
+TeleAgent 手里。你的仓库永远不会被上传——ChatGPT 通过一条安全的、OAuth 保护的
 **只读** MCP 连接，按需读取当前工作区里它真正需要的那几行代码。
 
 ## 一段话安装（纯小白专用）
 
-不懂 git、Node、终端？完全不需要懂。把下面这段话原样复制给你的编码
-Agent（Codex），然后去倒杯咖啡：
+不懂 git、Node、终端？完全不需要懂。把下面这段话原样复制给
+TeleAgent，然后去倒杯咖啡：
 
 ```text
-请帮我完整安装并配置 Codex with ChatGPT，全程自动，我是不懂技术的小白，
+请帮我完整安装并配置 TeleAgent with ChatGPT，全程自动，我是不懂技术的小白，
 所有事情你自己做：
 
 1. 环境自检：需要 git 和 Node.js ≥ 20，缺什么就自动安装
   （macOS 用 Homebrew，Windows 用 winget），同时安装 cloudflared。
-2. 下载：把 https://github.com/XiaoDuoYa/codex-with-chatgpt 克隆到
-   ~/codex-with-chatgpt（已存在就 git pull 更新）。
+2. 下载：把 https://github.com/leowood2000/teleagent-with-chatgpt 克隆到
+   ~/teleagent-with-chatgpt（已存在就 git pull 更新）。
 3. 构建：在该目录里执行 corepack pnpm install 和 corepack pnpm build。
-4. 安装 Skill：把仓库里的 skill/SKILL.md 复制到
-   ~/.codex/skills/codex-with-chatgpt/SKILL.md，并把文件中
-   "The codex-with-chatgpt checkout lives at:" 那一行的路径改成实际克隆路径。
+4. 安装技能：把仓库里的 skill/SKILL.md 复制到 TeleAgent 的技能目录
+  （形如 ~/.config/TeleAgent/users/<用户ID>/skills/teleagent-with-chatgpt/SKILL.md），
+  并把文件中「TeleAgent with ChatGPT 检出位置」一行的路径改成实际克隆路径。
+  新装的技能需要在新的 TeleAgent 会话中生效。
 5. 首次配置：按 SKILL.md 里的 first-time setup 流程执行
-  （运行 c2c setup，用内置浏览器打开 ChatGPT 配置连接器并输入配对码）。
-   全程只用内置浏览器，禁止打开任何第三方浏览器。
+  （运行 c2c setup，用会话提供的浏览器工具打开 ChatGPT 配置连接器并输入配对码；
+   没有浏览器工具时走 SKILL.md 的手动教学配置，一次只让我做一个动作）。
 6. 只有遇到需要我登录（ChatGPT / Cloudflare）、验证码或两步验证时才叫我，
-   而且一次只告诉我一个动作。
+    而且一次只告诉我一个动作。
 7. 完成后给我看 ✓ 清单，并确认文件读取测试通过。我不懂 MCP、OAuth、
-   Tunnel、端口这些词，不要向我解释；出了问题先自己修。
+    Tunnel、端口这些词，不要向我解释；出了问题先自己修。
 ```
 
 **更新**：Skill 每天自动检查一次 GitHub，有新版本会自动更新并继续任务，
-无需任何操作；也可以随时对 Codex 说"更新 Codex with ChatGPT"。
+无需任何操作；也可以随时对 TeleAgent 说"更新 TeleAgent with ChatGPT"。
 
 ## 安装 → 配置 → 使用（手动版）
 
-1. 安装 Codex Skill：把 `skill/` 复制到 `~/.codex/skills/codex-with-chatgpt/`。
-2. 对 Codex 说：**"使用 Codex with ChatGPT 完成首次配置。"**
-3. 之后正常使用：**"使用 Codex with ChatGPT，帮我实现 XXX。"**
+1. 安装 TeleAgent 技能：把 `skill/SKILL.md` 复制到 TeleAgent 的技能目录
+   （`~/.config/TeleAgent/users/<用户ID>/skills/teleagent-with-chatgpt/SKILL.md`，
+   把「检出位置」一行改成实际克隆路径），然后开一个**新的** TeleAgent 会话。
+2. 对 TeleAgent 说：**“使用 TeleAgent with ChatGPT 完成首次配置。”**
+3. 之后正常使用：**“使用 TeleAgent with ChatGPT，帮我实现 XXX。”**
 
 说明书到此结束。你不需要知道 MCP、OAuth、Tunnel、端口、localhost 是什么——
-Codex 会自动完成所有配置，你只会看到：
+TeleAgent 会自动完成所有配置，你只会看到：
 
 ```
-Codex with ChatGPT
+TeleAgent with ChatGPT
 
 ✓ 当前项目已识别
 ✓ Workspace Bridge 已启动
@@ -70,7 +84,7 @@ Ready.
 
 ### 可选的固定域名
 
-默认公网地址是临时的，桥重启后会变。Codex 会删掉这个项目的 ChatGPT 插件再按新地址加回去。
+默认公网地址是临时的，桥重启后会变。TeleAgent 会删掉这个项目的 ChatGPT 插件再按新地址加回去。
 
 如果你有 Cloudflare 账号，并且域名已经加在 Cloudflare 上，首次配置时（老用户则在下一次编码时问一次）会问你要不要用固定域名，例如 `c2c-<项目>.你的域名`。选是的话，浏览器里授权一次 Cloudflare 即可。之后重启一般不用再改插件。没有账号、不想用、登录失败：继续用临时地址，功能一样，只是修复更慢。
 
@@ -95,21 +109,21 @@ Ready.
              └──────────┬──────────┘
                         │  只读
                         ▼
-             ┌─────────────────────┐          ┌─────────────────────┐
-             │     本地工作区      │◀─────────│    Codex Harness    │
-             └─────────────────────┘ 编辑/git │  Shell / 测试 / 修复 │
-                                              └─────────────────────┘
+              ┌─────────────────────┐          ┌─────────────────────┐
+              │     本地工作区      │◀─────────│  TeleAgent Harness   │
+              └─────────────────────┘ 编辑/git │  Shell / 测试 / 修复 │
+                                               └─────────────────────┘
 ```
 
-- **控制面（Computer Use）**：Codex 与 ChatGPT 之间只交换极小的结构化 `[C2C]`
+- **控制面（浏览器）**：TeleAgent 与 ChatGPT 之间只交换极小的结构化 `[C2C]`
   状态消息——`INIT → PLAN → EXECUTED → REVIEW → DONE`。绝不粘贴 diff、日志
   或文件内容。
 - **数据面（MCP）**：ChatGPT 缺什么自己拉什么，共 9 个只读工具：
   `workspace_info`、`list_directory`、`read_file`、`search_workspace`、
   `git_status`、`git_diff`、`test_status`、`execution_summary`、
   `execution_output`。
-- **独立审查**：Codex 执行完毕后，ChatGPT 通过 MCP 亲自检查真实的 git diff
-  和测试记录——绝不因为 Codex 说"测试全过"就直接相信。
+- **独立审查**：TeleAgent 执行完毕后，ChatGPT 通过 MCP 亲自检查真实的 git diff
+  和测试记录——绝不因为 TeleAgent 说"测试全过"就直接相信。
 
 ## 安全模型（简版）
 
@@ -131,16 +145,21 @@ Ready.
 ```bash
 pnpm install
 pnpm build          # 产出 dist/，暴露 c2c 命令
-pnpm test           # vitest：150 个测试（路径安全、OAuth、配对、MCP 端到端）
+pnpm test           # vitest：180 个测试（路径安全、OAuth、配对、MCP 端到端、隧道 readiness）
 
 c2c setup           # 一条命令：Bridge + 隧道 + 配对码
-c2c sandbox-allow   # 把本地设置目录加入 Codex 沙箱白名单（macOS / Windows）
+c2c sandbox-allow   # TeleAgent 版为 no-op（原生文件访问），保留仅为兼容
 c2c status / doctor / pair / unpair / logs / stop
 ```
 
 环境要求：Node.js >= 20、git；公网连接需要 `cloudflared`
 （自动检测，Skill 会替你安装）。如果 QUIC 被拦截，设置
 `C2C_TUNNEL_PROTOCOL=http2` 后重启 Bridge。
+
+隧道就绪采用四级阶梯：LOCAL_READY → TUNNEL_REGISTERED →
+PUBLIC_READY / PUBLIC_UNKNOWN → CHATGPT_VERIFIED（最终 E2E 门槛是 ChatGPT
+真的调通 `workspace_info`）。在 `trycloudflare.com` 不稳定或被阻断的网络
+（如中国大陆），已注册的隧道会被接受，端到端判定交给 ChatGPT。
 
 文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) ·
 [安全](docs/security.md) · [故障排查](docs/troubleshooting.md)
@@ -158,17 +177,30 @@ src/
   execution/  审查闭环所需的执行记录
   process/    守护进程生命周期
   cli/        c2c 命令行
-skill/        Codex Skill（真正的 UX 层）
+skill/        TeleAgent 技能（真正的 UX 层）
 tests/        单元 + 集成测试
 docs/         架构 / 协议 / 安全 / 故障排查
 ```
 
 ## 状态与声明
 
-V1。已端到端验证：Bridge、OAuth + 配对、公网隧道、ChatGPT 连接器配置、
-零操作首次配置体验。
+本项目是 [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)
+的 TeleAgent 移植版：Codex Skill 重写为 TeleAgent 技能/浏览器模型，`sandbox-allow`
+改为 no-op（TeleAgent 原生有文件访问权），隧道 readiness 阶梯兼容
+`trycloudflare.com` 不稳定的网络。
 
-**非官方社区项目，与 OpenAI 无关联，未获其背书。**
+已端到端验证：Bridge、OAuth + 配对、Cloudflare Named Tunnel 固定域名、ChatGPT
+连接器配置 + `workspace_info` 往返、零操作首次配置体验。180 个测试全绿。
+
+**非官方社区项目，与 OpenAI 及 TeleAgent 团队均无关联，未获其背书。**
+
+### 条款风险提示
+
+控制面驱动的是 ChatGPT 网页版（自动发消息 + 程序化读取回复）。OpenAI 个人版
+条款禁止程序化提取服务输出。用付费个人版账号跑本项目请自行评估风险：低频、
+有人监督的使用远比长期无人值守循环稳妥。介意条款的话，干净的替代是官方 API
+路线，或保留人工点击发送的 human-in-the-loop 模式。另注意：ChatGPT 通过 MCP
+读取的那部分代码会传出境外服务器，政企/客户源码场景需另行评估。
 
 ## 许可证
 

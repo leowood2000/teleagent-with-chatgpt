@@ -26,7 +26,7 @@ import {
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir } from "../config/paths.js";
-import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
+import { ensureSandboxAllowlist } from "../config/sandbox-allow.js";
 import { mergeUiPrefs, readUiPrefs, SETUP_MODES, type SetupMode } from "../config/ui-prefs.js";
 import {
   CHATGPT_CREATE_CONNECTOR_URL,
@@ -182,7 +182,12 @@ interface AdminInfo {
   workspaceRoot: string;
   port: number;
   publicUrl: string | null;
-  tunnel: { running: boolean; url: string | null; provider: string };
+  tunnel: {
+    running: boolean;
+    url: string | null;
+    provider: string;
+    verification?: "public-verified" | "registered-only" | null;
+  };
   tokenCount: number;
   pairingActive: boolean;
   pid: number;
@@ -213,7 +218,7 @@ async function ensureBridgeAndTunnel(
 
 program
   .name("c2c")
-  .description(`${PRODUCT_NAME} — ChatGPT thinks. Codex works.`)
+  .description(`${PRODUCT_NAME} — ChatGPT thinks. TeleAgent works.`)
   .version(VERSION, "-v, --version")
   .configureHelp({ sortSubcommands: true });
 
@@ -328,6 +333,7 @@ program
               mode: isNamedTunnelReady(tunnelState) ? "named" : "quick",
               hostname: tunnelState.hostname ?? null,
               fallback: Boolean(tunnelState.fallbackReason),
+              verification: info.tunnel.verification ?? null,
             },
           })
         );
@@ -341,7 +347,7 @@ program
       say(`配对码：${pairingResult.code}（${Math.round((pairingResult.expiresAt - Date.now()) / 60000)} 分钟内有效）`);
       say("");
       say("下一步：在 ChatGPT 的连接器设置中添加以上地址（OAuth），并在授权页输入配对码。");
-      say("如果你在使用 Codex Skill，这一步会自动完成。");
+      say("如果你正在使用 TeleAgent Skill，这一步会自动完成。");
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -411,7 +417,13 @@ program
     say("");
     check(`Workspace：${info.workspaceName}`);
     check(`Bridge：运行中（端口 ${info.port}）`);
-    if (info.tunnel.running && info.tunnel.url) check(`安全连接：${info.tunnel.url}/mcp`);
+    if (info.tunnel.running && info.tunnel.url) {
+      if (info.tunnel.verification === "registered-only") {
+        check(`安全连接：${info.tunnel.url}/mcp（已注册；本机公网检查未通过，E2E 以 ChatGPT workspace_info 为准）`);
+      } else {
+        check(`安全连接：${info.tunnel.url}/mcp`);
+      }
+    }
     else say("· 安全连接：未启用（本地模式）");
     say(`· 已授权连接：${info.tokenCount > 0 ? "是" : "否"}`);
   });
@@ -433,24 +445,17 @@ program
     const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
     report.node = { ok: nodeMajor >= 20, detail: `v${process.versions.node}` };
 
-    // Codex sandbox writable_roots (so later chats do not need elevation)
+    // TeleAgent has native workspace file access; there is no sandbox
+    // allowlist to maintain. (Was: Codex config.toml writable_roots.)
     if (opts.fix) {
       const sandbox = trySandboxAllow();
       if (sandbox.ok) {
-        report.sandbox = { ok: true, detail: sandbox.alreadyAllowed ? "已在白名单" : "已写入白名单" };
-        if (sandbox.added) results.push("已将本地设置目录加入 Codex 沙箱白名单");
+        report.sandbox = { ok: true, detail: "已就绪" };
       } else {
         report.sandbox = { ok: false, detail: sandbox.error };
       }
     } else {
-      try {
-        const configPath = getCodexConfigPath();
-        const allowed =
-          fs.existsSync(configPath) && isStateDirAllowlisted(fs.readFileSync(configPath, "utf8"), getStateDir());
-        report.sandbox = allowed ? { ok: true, detail: "已在白名单" } : { ok: false, detail: "未在白名单" };
-      } catch (error) {
-        report.sandbox = { ok: false, detail: (error as Error).message };
-      }
+      report.sandbox = { ok: true, detail: "已就绪" };
     }
 
     // Workspace
@@ -558,12 +563,22 @@ program
       const expectedPublic = Boolean(lastEndpoint?.publicUrl) || namedReady;
       let currentUrl = info.publicUrl ?? info.tunnel.url;
       let healthy = false;
+      let publicCheckSkipped = false;
       if (currentUrl) {
-        try {
-          const response = await fetch(`${currentUrl}/health`, { signal: AbortSignal.timeout(8000) });
-          healthy = response.ok;
-        } catch {
-          healthy = false;
+        if (info.tunnel.running && info.tunnel.verification === "registered-only") {
+          // The tunnel is registered at the Cloudflare edge; fetching the public
+          // URL from this network may be unreliable (e.g. mainland China).
+          // Do not churn the address — the end-to-end gate is ChatGPT's
+          // workspace_info verification.
+          healthy = true;
+          publicCheckSkipped = true;
+        } else {
+          try {
+            const response = await fetch(`${currentUrl}/health`, { signal: AbortSignal.timeout(8000) });
+            healthy = response.ok;
+          } catch {
+            healthy = false;
+          }
         }
       }
 
@@ -590,7 +605,10 @@ program
       }
 
       if (currentUrl && healthy) {
-        report.tunnel = { ok: true, detail: currentUrl };
+        report.tunnel = {
+          ok: true,
+          detail: publicCheckSkipped ? `${currentUrl}（已注册，本机公网检查跳过）` : currentUrl,
+        };
         const nextMcp = mcpUrlFromPublic(currentUrl);
         const action = connectorAction(lastEndpoint?.mcpUrl, nextMcp);
         const boundName = nextMcp
@@ -785,7 +803,7 @@ program
 acceptUnusedWorkspaceOption(
   program
     .command("sandbox-allow")
-    .description("Add the local settings directory to the Codex sandbox allowlist")
+    .description("No-op (TeleAgent has native file access). Kept for compatibility.")
     .option("--json", "machine-readable output", false)
 )
   .action((opts: { json: boolean }) => {

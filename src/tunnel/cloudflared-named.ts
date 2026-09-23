@@ -52,7 +52,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     this.hostname = normalizeNamedTunnelHostname(opts.hostname);
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
-    this.startTimeoutMs = opts.startTimeoutMs ?? 45_000;
+    this.startTimeoutMs = opts.startTimeoutMs ?? 90_000;
   }
 
   private binary(): string | null {

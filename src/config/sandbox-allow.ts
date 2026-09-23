@@ -48,31 +48,18 @@ export function isStateDirAllowlisted(content: string, stateDir: string): boolea
 }
 
 /**
- * Idempotently add the C2C state directory to Codex's sandbox writable_roots.
- * Works on macOS, Windows, and Linux. Never rewrites unrelated config.
+ * TeleAgent adaptation: this is a no-op. TeleAgent has native workspace
+ * file-write access and does not use a Codex-style sandbox config.toml.
+ * The function still creates the state directory (needed by the bridge)
+ * and returns a success result so callers (doctor, setup) keep working.
  */
 export function ensureSandboxAllowlist(opts?: {
   configPath?: string;
   stateDir?: string;
 }): SandboxAllowResult {
   const stateDir = path.resolve(opts?.stateDir ?? getStateDir());
-  const configPath = opts?.configPath ?? getCodexConfigPath();
   fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
-
-  const previous = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
-  if (isStateDirAllowlisted(previous, stateDir)) {
-    return { added: false, alreadyAllowed: true, stateDir, configPath };
-  }
-
-  const next = upsertWritableRoot(previous, stateDir);
-  fs.writeFileSync(configPath, next, { encoding: "utf8", mode: 0o600 });
-  try {
-    fs.chmodSync(configPath, 0o600);
-  } catch {
-    // Windows / filesystems without chmod semantics
-  }
-  return { added: true, alreadyAllowed: false, stateDir, configPath };
+  return { added: false, alreadyAllowed: true, stateDir, configPath: "" };
 }
 
 export function upsertWritableRoot(content: string, stateDir: string): string {

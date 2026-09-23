@@ -370,7 +370,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     {
       title: "Test status",
       description:
-        `Summary of the most recent test run reported by the Codex harness. This does NOT run ` +
+        `Summary of the most recent test run reported by the agent harness. This does NOT run ` +
         `tests; it reads the latest execution record. ${UNTRUSTED_NOTE}`,
       inputSchema: {},
       outputSchema: testStatusOutputSchema,
@@ -401,7 +401,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     {
       title: "Execution summary",
       description:
-        `Recent Codex execution records for this workspace: task id, iteration, changed files, ` +
+        `Recent agent execution records for this workspace: task id, iteration, changed files, ` +
         `tests and exit status. Use it after Codex reports EXECUTED. ${UNTRUSTED_NOTE}`,
       inputSchema: {
         limit: z.number().int().min(1).max(50).default(5),
@@ -421,7 +421,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
     {
       title: "Execution output",
       description:
-        `List or read command output that Codex chose to record after a test/build/lint/typecheck ` +
+        `List or read command output that the agent chose to record after a test/build/lint/typecheck ` +
         `run. Call with action=list first, then action=read and an id. Restricted items have no ` +
         `body. This does not run commands. ${UNTRUSTED_NOTE}`,
       inputSchema: {

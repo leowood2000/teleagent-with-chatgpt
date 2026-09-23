@@ -19,8 +19,8 @@ describe("connectorAction", () => {
 
   it("updates when the old address was reclaimed", () => {
     expect(connectorAction("https://old.trycloudflare.com/mcp", "https://new.trycloudflare.com/mcp")).toBe("update");
-    expect(reclaimUserMessage("Codex with ChatGPT")).toContain("删除");
-    expect(reclaimUserMessage("Codex with ChatGPT")).not.toContain("Reconnect");
+    expect(reclaimUserMessage("TeleAgent with ChatGPT")).toContain("删除");
+    expect(reclaimUserMessage("TeleAgent with ChatGPT")).not.toContain("Reconnect");
   });
 
   it("does nothing without a next URL", () => {
@@ -34,10 +34,22 @@ describe("connectorNameFor", () => {
       connectorNameFor({
         workspaceName: "EchoMind",
         workspaceId: "abc123abc123",
-        previousName: "Codex with ChatGPT",
+        previousName: DEFAULT_CONNECTOR_NAME,
         hadEndpointBefore: true,
       })
     ).toBe(DEFAULT_CONNECTOR_NAME);
+  });
+
+  it("never rewrites a legacy stored name", () => {
+    // A workspace recorded by the original Codex version keeps its old title forever.
+    expect(
+      connectorNameFor({
+        workspaceName: "EchoMind",
+        workspaceId: "abc123abc123",
+        previousName: "Codex with ChatGPT",
+        hadEndpointBefore: true,
+      })
+    ).toBe("Codex with ChatGPT");
   });
 
   it("keeps the legacy title when this workspace was used before the name field existed", () => {
@@ -57,7 +69,7 @@ describe("connectorNameFor", () => {
         workspaceId: "def456def456",
         hadEndpointBefore: false,
       })
-    ).toBe("Codex with ChatGPT · Landing");
+    ).toBe(`${DEFAULT_CONNECTOR_NAME} · Landing`);
   });
 });
 

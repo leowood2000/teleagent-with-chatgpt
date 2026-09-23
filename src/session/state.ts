@@ -76,7 +76,7 @@ export interface ConversationView {
   projectReady: boolean;
   chatUrl: string | null;
   connectorName: string | null;
-  /** long-chat: Skill may goto chatUrl. project: only if THIS Codex thread already bound it. */
+  /** long-chat: Skill may goto chatUrl. project: only if THIS agent thread already bound it. */
   reuseSavedChat: boolean;
 }
 

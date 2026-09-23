@@ -4,11 +4,12 @@ import type { Logger } from "../logger/index.js";
 import { nullLogger } from "../logger/index.js";
 import { SERVICE_NAME } from "../version.js";
 import { findBinary } from "./detect.js";
-import type { TunnelDoctorReport, TunnelProvider, TunnelStatus } from "./provider.js";
+import type { TunnelDoctorReport, TunnelProvider, TunnelStatus, TunnelVerification } from "./provider.js";
 import { tunnelProtocolArgs } from "./protocol.js";
 
 const QUICK_TUNNEL_URL_RE = /https:\/\/[^\s|]+/gi;
 const QUICK_TUNNEL_HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.trycloudflare\.com$/i;
+const REGISTERED_RE = /\bRegistered tunnel connection\b/;
 const HEALTH_CHECK_INTERVAL_MS = 250;
 const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 
@@ -71,6 +72,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
   readonly name = "cloudflare-quick";
   private child: ChildProcess | null = null;
   private url: string | null = null;
+  private verification: TunnelVerification | null = null;
   private lastError: string | null = null;
   private readonly startTimeoutMs: number;
   private readonly spawnImpl: NonNullable<CloudflaredQuickTunnelOptions["spawnImpl"]>;
@@ -83,7 +85,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
     private readonly binaryOverride?: string,
     options: CloudflaredQuickTunnelOptions = {}
   ) {
-    this.startTimeoutMs = options.startTimeoutMs ?? 45_000;
+    this.startTimeoutMs = options.startTimeoutMs ?? 90_000;
     this.spawnImpl = options.spawnImpl ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
   }
@@ -115,6 +117,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
     }
 
     return new Promise<string>((resolve, reject) => {
+      let registered = false;
       let child: ChildProcess;
       try {
         child = this.spawnImpl(
@@ -172,7 +175,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
       cancel = () => fail(new Error("Tunnel start stopped"));
       this.cancelStart = cancel;
 
-      const ready = (url: string): void => {
+      const ready = (url: string, verification: TunnelVerification): void => {
         if (!isAlive()) {
           fail(new Error("cloudflared exited before the public health endpoint became ready"));
           return;
@@ -180,8 +183,13 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
         finish(
           () => {
             this.url = url;
+            this.verification = verification;
             this.lastError = null;
-            this.logger.info(`Quick tunnel established: ${url}`);
+            this.logger.info(
+              verification === "public-verified"
+                ? `Quick tunnel established: ${url} (public health verified)`
+                : `Quick tunnel established: ${url} (registered at Cloudflare edge; public health unreachable from this network)`
+            );
             resolve(url);
           },
           false
@@ -201,7 +209,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
             const result = await bridgeHealth(this.fetchImpl, publicUrl);
             if (settled) return;
             if (result.ready) {
-              ready(publicUrl);
+              ready(publicUrl, "public-verified");
               return;
             }
             this.lastError = result.detail;
@@ -214,11 +222,26 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
         }
       };
 
+      // Readiness ladder (China-network friendly):
+      // 1. LOCAL_READY is implied — the bridge serves this admin API, so it is
+      //    listening on the local port.
+      // 2. TUNNEL_REGISTERED: URL parsed + "Registered tunnel connection" seen.
+      // 3. PUBLIC_READY: public /health identifies the bridge -> verified.
+      //    If public fetches from this network never succeed but cloudflared is
+      //    registered and alive, accept the tunnel as registered-only instead
+      //    of failing (what ChatGPT sees is the Cloudflare edge, not this LAN).
+      // 4. CHATGPT_VERIFIED: the Skill confirms end-to-end via workspace_info.
       timeout = setTimeout(() => {
-        if (!settled) {
-          this.logger.error(`Quick tunnel did not become ready within ${this.startTimeoutMs}ms`);
-          fail(new Error("Tunnel start timed out"));
+        if (settled) return;
+        if (registered && isAlive() && candidateUrl) {
+          this.logger.info(
+            "Public health check never succeeded from this network; accepting the registered tunnel"
+          );
+          ready(candidateUrl, "registered-only");
+          return;
         }
+        this.logger.error(`Quick tunnel did not become ready within ${this.startTimeoutMs}ms`);
+        fail(new Error("Tunnel start timed out"));
       }, this.startTimeoutMs);
 
       const scan = (stream: NodeJS.ReadableStream): void => {
@@ -231,6 +254,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
               this.logger.error(`Quick tunnel health check failed: ${String(error)}`);
             });
           }
+          if (REGISTERED_RE.test(line)) registered = true;
           if (/\b(?:ERR|error|failed|fatal)\b/i.test(line)) {
             this.lastError = line.slice(0, 400);
             this.logger.debug(`cloudflared: ${line.slice(0, 400)}`);
@@ -278,6 +302,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
       this.child = null;
     }
     this.url = null;
+    this.verification = null;
     this.lastError = null;
   }
 
@@ -291,6 +316,7 @@ export class CloudflaredQuickTunnel implements TunnelProvider {
       running: this.child !== null && this.url !== null,
       url: this.url,
       provider: this.name,
+      verification: this.verification,
       detail: this.lastError ?? undefined,
     };
   }

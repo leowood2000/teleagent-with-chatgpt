@@ -4,7 +4,12 @@ import type { Logger } from "../logger/index.js";
 import { nullLogger } from "../logger/index.js";
 import { findBinary } from "./detect.js";
 import { tunnelProtocolArgs } from "./protocol.js";
-import type { TunnelDoctorReport, TunnelProvider, TunnelStatus } from "./provider.js";
+import type {
+  TunnelDoctorReport,
+  TunnelLifecycleCallbacks,
+  TunnelProvider,
+  TunnelStatus,
+} from "./provider.js";
 
 const CONNECTED_RE = /registered tunnel connection/i;
 const HOSTNAME_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
@@ -55,8 +60,8 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   private readonly binaryOverride?: string;
   private readonly startTimeoutMs: number;
   private readonly spawnImpl: SpawnImpl;
-  private readonly onDisconnect?: (reason: string) => void;
-  private readonly onReconnect?: (url: string) => void;
+  private onDisconnect?: (reason: string) => void;
+  private onReconnect?: (url: string) => void;
   private readonly autoRestart: boolean;
   private readonly maxRestartDelayMs: number;
   private child: ChildProcess | null = null;
@@ -66,6 +71,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   private deliberateStop = false;
   private restarting = false;
   private restartAttempts = 0;
+  private autoRestartTotal = 0;
   private restartTimer: NodeJS.Timeout | null = null;
 
   constructor(opts: CloudflaredNamedTunnelOptions) {
@@ -87,6 +93,12 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
 
   private binary(): string | null {
     return this.binaryOverride ?? findBinary("cloudflared");
+  }
+
+  /** Replace the lifecycle callbacks (used by the bridge after injection). */
+  setLifecycleCallbacks(callbacks: TunnelLifecycleCallbacks): void {
+    this.onDisconnect = callbacks.onDisconnect;
+    this.onReconnect = callbacks.onReconnect;
   }
 
   private publicUrl(): string {
@@ -155,21 +167,23 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       if (child.stdout) scan(child.stdout);
       if (child.stderr) scan(child.stderr);
 
-      child.on("error", (error) => {
-        this.child = null;
-        this.connected = false;
-        finish(() => reject(error));
-      });
-      child.on("exit", (code) => {
+      // Identity guard: only react to events from the current child. A
+      // stopped child can deliver a late exit/error after a replacement has
+      // already been spawned (explicit restart, or auto-recovery); those stale
+      // events must not clear the replacement's state or schedule extra runs.
+      const isCurrent = (): boolean => this.child === child;
+
+      const handleUnexpectedDeath = (reason: string): void => {
+        if (!isCurrent()) return;
         const wasStarting = !this.connected;
         this.child = null;
         this.connected = false;
         if (wasStarting) {
-          this.logger.warn(`cloudflared named tunnel exited with code ${code}`);
+          this.logger.warn(`cloudflared named tunnel died while starting: ${reason}`);
           finish(() =>
             reject(
               new Error(
-                `cloudflared exited (code ${code}) before establishing the named tunnel${
+                `cloudflared died before establishing the named tunnel (${reason})${
                   this.lastError ? `: ${this.lastError}` : ""
                 }`
               )
@@ -179,12 +193,33 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
         }
         // The tunnel was established, then the connector died. Report and
         // (unless this was a deliberate stop) schedule an automatic restart.
-        const reason = `cloudflared exited with code ${code}`;
         this.logger.warn(`Named tunnel disconnected: ${reason}`);
         this.onDisconnect?.(reason);
         if (this.autoRestart && !this.deliberateStop && this.lastPort !== null) {
           this.scheduleRestart();
         }
+      };
+
+      child.on("error", (error) => {
+        if (!isCurrent()) return; // stale event from a replaced child
+        const wasEstablished = this.connected;
+        this.child = null;
+        this.connected = false;
+        if (wasEstablished) {
+          // Established connector hit a runtime error (e.g. spawn failure on
+          // restart): follow the same disconnect/recovery path as exit.
+          this.logger.warn(`Named tunnel disconnected: ${error.message}`);
+          this.onDisconnect?.(error.message);
+          if (this.autoRestart && !this.deliberateStop && this.lastPort !== null) {
+            this.scheduleRestart();
+          }
+          return;
+        }
+        finish(() => reject(error));
+      });
+      child.on("exit", (code) => {
+        // Full reason string: onDisconnect consumers report this verbatim.
+        handleUnexpectedDeath(`cloudflared exited with code ${code}`);
       });
     });
   }
@@ -221,6 +256,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
         .then((url) => {
           this.restartAttempts = 0;
           this.restarting = false;
+          this.autoRestartTotal += 1;
           this.logger.info(`Named tunnel auto-restart succeeded: ${url}`);
           this.onReconnect?.(url);
         })
@@ -238,6 +274,10 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
     }
+    // A cancelled pending recovery must not block future auto-restarts:
+    // scheduleRestart() no-ops while `restarting` is true, so reset it here
+    // alongside the timer.
+    this.restarting = false;
     if (this.child) {
       this.child.kill("SIGTERM");
       this.child = null;
@@ -270,6 +310,11 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   /** Number of consecutive auto-restart attempts since the last success. */
   restartCount(): number {
     return this.restartAttempts;
+  }
+
+  /** Total number of successful automatic recoveries since bridge start. */
+  autoRestartCount(): number {
+    return this.autoRestartTotal;
   }
 
   async doctor(): Promise<TunnelDoctorReport> {

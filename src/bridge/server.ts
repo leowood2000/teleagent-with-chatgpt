@@ -17,22 +17,13 @@ import { DEFAULT_HOST, DEFAULT_PORT } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
 
-function tunnelForWorkspace(
-  workspaceId: string,
-  logger: Logger,
-  hooks: {
-    onDisconnect?: (reason: string) => void;
-    onReconnect?: (url: string) => void;
-  }
-): TunnelProvider {
+function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
   const binding = namedTunnelBinding(readTunnelState(workspaceId));
   if (binding) {
     return new CloudflaredNamedTunnel({
       tunnelName: binding.tunnelName,
       hostname: binding.hostname,
       logger,
-      onDisconnect: hooks.onDisconnect,
-      onReconnect: hooks.onReconnect,
     });
   }
   return new CloudflaredQuickTunnel(logger);
@@ -100,28 +91,30 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   const pairing = new PairingManager(workspace.id, { ttlMs: opts.pairingTtlMs });
   const adminToken = `c2c_admin_${randomBytes(24).toString("base64url")}`;
 
+  const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
+
   let publicBaseUrl: string | null = null;
   let tunnelRestartCount = 0;
   // Forward reference: assigned after listen() resolves the actual port.
   let persistRuntimeState: () => void = () => {};
 
-  const tunnel =
-    opts.tunnelProvider ??
-    tunnelForWorkspace(workspace.id, logger, {
-      // Keep the bridge-level public URL in sync with the real tunnel state
-      // so a dead connector never leaves a stale address behind (public 530).
-      onDisconnect: (reason: string): void => {
-        if (!publicBaseUrl) return;
-        logger.warn(`Tunnel disconnected (${reason}); clearing public URL`);
-        publicBaseUrl = null;
-        persistRuntimeState();
-      },
-      onReconnect: (url: string): void => {
-        logger.info(`Tunnel reconnected: ${url}`);
-        publicBaseUrl = url;
-        persistRuntimeState();
-      },
-    });
+  // Keep the bridge-level public URL in sync with the real tunnel state so a
+  // dead connector never leaves a stale address behind (public 530). Works
+  // for both the built-in named tunnel and injected providers that implement
+  // setLifecycleCallbacks; providers without self-healing opt out.
+  tunnel.setLifecycleCallbacks?.({
+    onDisconnect: (reason: string): void => {
+      if (!publicBaseUrl) return;
+      logger.warn(`Tunnel disconnected (${reason}); clearing public URL`);
+      publicBaseUrl = null;
+      persistRuntimeState();
+    },
+    onReconnect: (url: string): void => {
+      logger.info(`Tunnel reconnected: ${url}`);
+      publicBaseUrl = url;
+      persistRuntimeState();
+    },
+  });
 
   const app = express();
   app.set("trust proxy", true);
@@ -196,7 +189,9 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       port,
       publicUrl: publicBaseUrl,
       tunnel: tunnel.status(),
-      tunnelRestarts: tunnelRestartCount,
+      manualTunnelRestarts: tunnelRestartCount,
+      autoTunnelRestarts:
+        tunnel instanceof CloudflaredNamedTunnel ? tunnel.autoRestartCount() : 0,
       tokenCount: authStore.tokenCount(),
       pairingActive: pairing.hasActiveSession(),
       pid: process.pid,
@@ -233,7 +228,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       .then((url) => {
         publicBaseUrl = url;
         persistRuntime();
-        res.json({ url, restarts: tunnelRestartCount });
+        res.json({ url, manualRestarts: tunnelRestartCount });
       })
       .catch((error: Error) => {
         logger.error(`Tunnel restart failed: ${error.message}`);

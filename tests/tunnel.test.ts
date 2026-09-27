@@ -460,6 +460,90 @@ describe("CloudflaredNamedTunnel auto-restart", () => {
     await tunnel.stop();
     vi.useRealTimers();
   });
+
+  it("stale exit from a replaced child never clears the new connector", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const { tunnel, children } = makeNamed({
+      onDisconnect: (reason) => events.push(`disconnect:${reason}`),
+      onReconnect: (url) => events.push(`reconnect:${url}`),
+    });
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Explicit restart replaces A with B...
+    const restarted = tunnel.restart(3333);
+    await flush();
+    announce(children[1]);
+    await expect(restarted).resolves.toBe(NAMED_URL);
+    expect(children.length).toBe(2);
+
+    // ...and A's exit arrives late (real child shutdown is asynchronous).
+    children[0].emit("exit", 1, null);
+    // B stays the current, live connector; no false disconnect, no extra C.
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    expect(events.filter((e) => e.startsWith("disconnect:")).length).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(children.length).toBe(2); // no respawn C
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("future recovery still works after an explicit restart cancelled a pending one", async () => {
+    vi.useFakeTimers();
+    const { tunnel, children } = makeNamed();
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // A dies: auto-restart timer pending (restarting = true)...
+    children[0].emit("exit", 1, null);
+    // ...but an explicit restart cancels it and connects B.
+    const restarted = tunnel.restart(3333);
+    await flush();
+    announce(children[1]);
+    await expect(restarted).resolves.toBe(NAMED_URL);
+
+    // B now dies unexpectedly: auto-restart MUST still be able to run
+    // (the cancelled pending recovery must not leave `restarting` latched).
+    children[1].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(children.length).toBe(2);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(children.length).toBe(3); // C auto-spawned
+    announce(children[2]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("post-establishment child error triggers disconnect and auto-recovery", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const { tunnel, children } = makeNamed({
+      onDisconnect: (reason) => events.push(`disconnect:${reason}`),
+      onReconnect: (url) => events.push(`reconnect:${url}`),
+    });
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Established connector hits a runtime (spawn) error instead of exit.
+    children[0].emit("error", new Error("spawn EACCES"));
+    expect(tunnel.status()).toMatchObject({ running: false, url: null });
+    expect(events[0]).toBe("disconnect:spawn EACCES");
+
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(children.length).toBe(2);
+    announce(children[1]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    expect(tunnel.autoRestartCount()).toBe(1);
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
 });
 
 describe("named hostname helpers", () => {

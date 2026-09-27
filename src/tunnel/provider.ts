@@ -32,6 +32,11 @@ export interface TunnelDoctorReport {
   problems: string[];
 }
 
+export interface TunnelLifecycleCallbacks {
+  onDisconnect?: (reason: string) => void;
+  onReconnect?: (url: string) => void;
+}
+
 export interface TunnelProvider {
   readonly name: string;
   /** Start the tunnel for a local port; resolves with the public URL. */
@@ -41,4 +46,11 @@ export interface TunnelProvider {
   status(): TunnelStatus;
   getPublicUrl(): string | null;
   doctor(): Promise<TunnelDoctorReport>;
+  /**
+   * Optional: let the bridge subscribe to unexpected-disconnect and
+   * auto-reconnect lifecycle events so its public URL never goes stale.
+   * Providers without self-healing (e.g. quick tunnels) do not implement
+   * this; the bridge then simply never changes the URL on its own.
+   */
+  setLifecycleCallbacks?(callbacks: TunnelLifecycleCallbacks): void;
 }

@@ -73,6 +73,10 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   private restartAttempts = 0;
   private autoRestartTotal = 0;
   private restartTimer: NodeJS.Timeout | null = null;
+  /** In-flight start(): concurrent callers join this promise (no double spawn). */
+  private starting: Promise<string> | null = null;
+  /** Cancels the in-flight start() when stop() runs before establishment. */
+  private cancelStart: (() => void) | null = null;
 
   constructor(opts: CloudflaredNamedTunnelOptions) {
     const tunnelName = opts.tunnelName.trim();
@@ -107,6 +111,10 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
 
   async start(localPort: number): Promise<string> {
     if (this.child && this.connected) return this.publicUrl();
+    // Deduplicate concurrent callers (auto-recovery, doctor --fix, admin
+    // endpoints): join the in-flight start instead of spawning a second
+    // connector that would replace this.child mid-handshake.
+    if (this.starting) return this.starting;
     const bin = this.binary();
     if (!bin) {
       throw new Error(
@@ -116,6 +124,20 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     this.lastPort = localPort;
     this.deliberateStop = false;
 
+    const pending = this.startProcess(bin, localPort);
+    this.starting = pending;
+    try {
+      return await pending;
+    } finally {
+      // Only clear if no newer start replaced us while we were pending.
+      if (this.starting === pending) {
+        this.starting = null;
+        this.cancelStart = null;
+      }
+    }
+  }
+
+  private startProcess(bin: string, localPort: number): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const child = this.spawnImpl(
         bin,
@@ -134,6 +156,10 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       this.connected = false;
       this.lastError = null;
       let settled = false;
+      // Per-child establishment flag: registration detection, the start
+      // timeout, and pre/post-establishment death classification all read
+      // this local state so a stale sibling can never forge or mask it.
+      let established = false;
 
       const finish = (fn: () => void): void => {
         if (settled) return;
@@ -142,17 +168,35 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
         fn();
       };
       const timeout = setTimeout(() => {
-        if (!this.connected) {
+        if (!established) {
           this.lastError = "Named tunnel start timed out";
           child.kill("SIGTERM");
           finish(() => reject(new Error(this.lastError ?? "Named tunnel start timed out")));
         }
       }, this.startTimeoutMs);
 
+      // Identity guard: only react to events from the current child. A
+      // stopped child can deliver late exit/error/output lines after a
+      // replacement has already been spawned (explicit restart, or
+      // auto-recovery); those stale events must not clear or forge the
+      // replacement's state, skip its registration line, or schedule
+      // extra restarts.
+      const isCurrent = (): boolean => this.child === child;
+
+      // A deliberate stop() while this start is still pending must not leave
+      // the promise (and the child) dangling; reject it so callers and the
+      // dedup slot are released. The child itself is killed by stop().
+      this.cancelStart = (): void => {
+        if (settled) return;
+        finish(() => reject(new Error("Named tunnel start was cancelled by stop()")));
+      };
+
       const scan = (stream: NodeJS.ReadableStream): void => {
         const rl = readline.createInterface({ input: stream });
         rl.on("line", (line) => {
-          if (CONNECTED_RE.test(line) && !this.connected) {
+          if (!isCurrent()) return; // stale output from a replaced child
+          if (CONNECTED_RE.test(line) && !established) {
+            established = true;
             this.connected = true;
             const url = this.publicUrl();
             this.logger.info(`Named tunnel established: ${url}`);
@@ -167,15 +211,9 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       if (child.stdout) scan(child.stdout);
       if (child.stderr) scan(child.stderr);
 
-      // Identity guard: only react to events from the current child. A
-      // stopped child can deliver a late exit/error after a replacement has
-      // already been spawned (explicit restart, or auto-recovery); those stale
-      // events must not clear the replacement's state or schedule extra runs.
-      const isCurrent = (): boolean => this.child === child;
-
       const handleUnexpectedDeath = (reason: string): void => {
         if (!isCurrent()) return;
-        const wasStarting = !this.connected;
+        const wasStarting = !established;
         this.child = null;
         this.connected = false;
         if (wasStarting) {
@@ -202,7 +240,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
 
       child.on("error", (error) => {
         if (!isCurrent()) return; // stale event from a replaced child
-        const wasEstablished = this.connected;
+        const wasEstablished = established;
         this.child = null;
         this.connected = false;
         if (wasEstablished) {
@@ -278,6 +316,16 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     // scheduleRestart() no-ops while `restarting` is true, so reset it here
     // alongside the timer.
     this.restarting = false;
+    // A deliberate stop during a pending start must cancel that start (its
+    // promise would otherwise hang: the child's exit event is identity-
+    // guarded, so nothing would ever settle it) and release the dedup slot
+    // immediately instead of relying on microtask ordering.
+    if (this.cancelStart) {
+      const cancel = this.cancelStart;
+      this.cancelStart = null;
+      cancel();
+    }
+    this.starting = null;
     if (this.child) {
       this.child.kill("SIGTERM");
       this.child = null;

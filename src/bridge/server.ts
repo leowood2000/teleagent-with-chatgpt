@@ -190,8 +190,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       publicUrl: publicBaseUrl,
       tunnel: tunnel.status(),
       manualTunnelRestarts: tunnelRestartCount,
-      autoTunnelRestarts:
-        tunnel instanceof CloudflaredNamedTunnel ? tunnel.autoRestartCount() : 0,
+      autoTunnelRestarts: tunnel.autoRestartCount?.() ?? 0,
       tokenCount: authStore.tokenCount(),
       pairingActive: pairing.hasActiveSession(),
       pid: process.pid,

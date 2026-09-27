@@ -53,4 +53,10 @@ export interface TunnelProvider {
    * this; the bridge then simply never changes the URL on its own.
    */
   setLifecycleCallbacks?(callbacks: TunnelLifecycleCallbacks): void;
+  /**
+   * Optional capability: total successful automatic recoveries since bridge
+   * start, for observability. Providers without self-healing do not
+   * implement this and are reported as 0 by the bridge.
+   */
+  autoRestartCount?(): number;
 }

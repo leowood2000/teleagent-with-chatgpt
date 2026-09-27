@@ -544,6 +544,113 @@ describe("CloudflaredNamedTunnel auto-restart", () => {
     await tunnel.stop();
     vi.useRealTimers();
   });
+
+  it("stale registration output from a replaced child cannot forge or mask the new connector", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const { tunnel, children } = makeNamed({
+      onDisconnect: (reason) => events.push(`disconnect:${reason}`),
+      onReconnect: (url) => events.push(`reconnect:${url}`),
+    });
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Explicit restart replaces A with B; A's stderr then delivers a late,
+    // buffered registration line after its replacement is already spawned.
+    const restarted = tunnel.restart(3333);
+    await flush();
+    expect(children.length).toBe(2);
+    announce(children[0]); // stale A registration line
+    announce(children[1]); // B's real registration line
+
+    await expect(restarted).resolves.toBe(NAMED_URL);
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    expect(events.filter((e) => e.startsWith("disconnect:")).length).toBe(0);
+    expect(events.filter((e) => e.startsWith("reconnect:")).length).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(children.length).toBe(2); // no extra C
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("stale error output from a replaced child cannot overwrite the current connector's lastError", async () => {
+    vi.useFakeTimers();
+    const { tunnel, children } = makeNamed();
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    const restarted = tunnel.restart(3333);
+    await flush();
+    expect(children.length).toBe(2);
+
+    // A's late error line must be ignored; B is the current connector.
+    children[0].stderr.write("ERR failed to connect to Cloudflare edge: stale connector\n");
+    announce(children[1]);
+    await expect(restarted).resolves.toBe(NAMED_URL);
+    expect(tunnel.status().detail).toBeUndefined(); // stale ERR never recorded
+
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("concurrent start() calls join a single in-flight spawn", async () => {
+    vi.useFakeTimers();
+    const { tunnel, children } = makeNamed();
+    const first = tunnel.start(3333);
+    const second = tunnel.start(3333); // must join, not spawn again
+    announce(children[0]);
+    await expect(first).resolves.toBe(NAMED_URL);
+    await expect(second).resolves.toBe(NAMED_URL);
+    expect(children.length).toBe(1); // one process spawn only
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("stop() during a pending start cancels it and leaves no orphan connector", async () => {
+    vi.useFakeTimers();
+    const { tunnel, children } = makeNamed();
+    const starting = tunnel.start(3333); // pending, never announced
+    await flush();
+
+    await tunnel.stop();
+    await expect(starting).rejects.toThrow(/cancelled/i);
+    expect(children[0].kill).toHaveBeenCalledWith("SIGTERM"); // no orphan cloudflared
+    expect(tunnel.status()).toMatchObject({ running: false, url: null });
+
+    // The dedup slot is released immediately: a fresh start works.
+    const fresh = tunnel.start(3333);
+    announce(children[1]);
+    await expect(fresh).resolves.toBe(NAMED_URL);
+    expect(children.length).toBe(2);
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("a doctor-style start() during an in-flight auto-recovery joins it instead of spawning a second connector", async () => {
+    vi.useFakeTimers();
+    const { tunnel, children } = makeNamed();
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Established connector dies: auto-recovery spawns B after the 1s backoff.
+    children[0].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(children.length).toBe(2); // B spawned by auto-recovery, still connecting
+
+    // A concurrent doctor-style start() must join the pending B, not spawn C.
+    const doctorStart = tunnel.start(3333);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(children.length).toBe(2); // still only B
+
+    announce(children[1]);
+    await expect(doctorStart).resolves.toBe(NAMED_URL);
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
 });
 
 describe("named hostname helpers", () => {

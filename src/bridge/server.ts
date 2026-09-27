@@ -17,13 +17,22 @@ import { DEFAULT_HOST, DEFAULT_PORT } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
 
-function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
+function tunnelForWorkspace(
+  workspaceId: string,
+  logger: Logger,
+  hooks: {
+    onDisconnect?: (reason: string) => void;
+    onReconnect?: (url: string) => void;
+  }
+): TunnelProvider {
   const binding = namedTunnelBinding(readTunnelState(workspaceId));
   if (binding) {
     return new CloudflaredNamedTunnel({
       tunnelName: binding.tunnelName,
       hostname: binding.hostname,
       logger,
+      onDisconnect: hooks.onDisconnect,
+      onReconnect: hooks.onReconnect,
     });
   }
   return new CloudflaredQuickTunnel(logger);
@@ -89,10 +98,30 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   const authStore = new AuthStore(workspace.id, { file: opts.authStoreFile });
   const pairing = new PairingManager(workspace.id, { ttlMs: opts.pairingTtlMs });
-  const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
   const adminToken = `c2c_admin_${randomBytes(24).toString("base64url")}`;
 
   let publicBaseUrl: string | null = null;
+  let tunnelRestartCount = 0;
+  // Forward reference: assigned after listen() resolves the actual port.
+  let persistRuntimeState: () => void = () => {};
+
+  const tunnel =
+    opts.tunnelProvider ??
+    tunnelForWorkspace(workspace.id, logger, {
+      // Keep the bridge-level public URL in sync with the real tunnel state
+      // so a dead connector never leaves a stale address behind (public 530).
+      onDisconnect: (reason: string): void => {
+        if (!publicBaseUrl) return;
+        logger.warn(`Tunnel disconnected (${reason}); clearing public URL`);
+        publicBaseUrl = null;
+        persistRuntimeState();
+      },
+      onReconnect: (url: string): void => {
+        logger.info(`Tunnel reconnected: ${url}`);
+        publicBaseUrl = url;
+        persistRuntimeState();
+      },
+    });
 
   const app = express();
   app.set("trust proxy", true);
@@ -167,6 +196,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       port,
       publicUrl: publicBaseUrl,
       tunnel: tunnel.status(),
+      tunnelRestarts: tunnelRestartCount,
       tokenCount: authStore.tokenCount(),
       pairingActive: pairing.hasActiveSession(),
       pid: process.pid,
@@ -194,6 +224,23 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       persistRuntime();
       res.json({ stopped: true });
     });
+  });
+
+  app.post("/admin/tunnel/restart", adminGuard, (_req, res) => {
+    tunnelRestartCount += 1;
+    tunnel
+      .restart(port)
+      .then((url) => {
+        publicBaseUrl = url;
+        persistRuntime();
+        res.json({ url, restarts: tunnelRestartCount });
+      })
+      .catch((error: Error) => {
+        logger.error(`Tunnel restart failed: ${error.message}`);
+        publicBaseUrl = null;
+        persistRuntime();
+        res.status(500).json({ error: "tunnel_failed", message: error.message });
+      });
   });
 
   app.post("/admin/revoke-all", adminGuard, (_req, res) => {
@@ -229,6 +276,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     };
     writeRuntimeState(state);
   };
+  persistRuntimeState = persistRuntime;
   persistRuntime();
 
   let closed = false;

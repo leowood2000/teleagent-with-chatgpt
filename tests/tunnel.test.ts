@@ -9,7 +9,7 @@ import {
   parseQuickTunnelUrl,
   type CloudflaredQuickTunnelOptions,
 } from "../src/tunnel/cloudflared.js";
-import { normalizeNamedTunnelHostname } from "../src/tunnel/cloudflared-named.js";
+import { normalizeNamedTunnelHostname, CloudflaredNamedTunnel } from "../src/tunnel/cloudflared-named.js";
 import { hostnameSlug, parseZoneInput, suggestedNamedHostname } from "../src/tunnel/hostname.js";
 import {
   chooseQuickTunnel,
@@ -303,6 +303,162 @@ describe("normalizeNamedTunnelHostname", () => {
   it("rejects URLs and invalid hostnames", () => {
     expect(() => normalizeNamedTunnelHostname("https://dev.getremi.xyz")).toThrow(/invalid/i);
     expect(() => normalizeNamedTunnelHostname("localhost")).toThrow(/invalid/i);
+  });
+});
+
+describe("CloudflaredNamedTunnel auto-restart", () => {
+  const NAMED_URL = "https://c2c-demo.example.com";
+
+  function makeNamed(
+    extra?: Partial<ConstructorParameters<typeof CloudflaredNamedTunnel>[0]>
+  ): { tunnel: CloudflaredNamedTunnel; children: FakeCloudflaredProcess[] } {
+    const children: FakeCloudflaredProcess[] = [];
+    const spawnImpl = vi.fn(() => {
+      const child = new FakeCloudflaredProcess();
+      children.push(child);
+      return child as unknown as ChildProcess;
+    });
+    const tunnel = new CloudflaredNamedTunnel({
+      tunnelName: "c2c-abc",
+      hostname: "c2c-demo.example.com",
+      binaryOverride: "cloudflared",
+      spawnImpl,
+      startTimeoutMs: 2_000,
+      ...extra,
+    });
+    return { tunnel, children };
+  }
+
+  function announce(child: FakeCloudflaredProcess): void {
+    child.stderr.write(
+      "INF Registered tunnel connection connIndex=0 connection=afd78110 event=0 protocol=http2\n"
+    );
+  }
+
+  /** Flush process.nextTick / microtask queues (readline line events). */
+  async function flush(): Promise<void> {
+    await new Promise<void>((resolve) => process.nextTick(() => process.nextTick(resolve)));
+  }
+
+  it("restarts automatically after an unexpected exit and reports disconnect/reconnect", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const { tunnel, children } = makeNamed({
+      onDisconnect: (reason) => events.push(`disconnect:${reason}`),
+      onReconnect: (url) => events.push(`reconnect:${url}`),
+    });
+
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Unexpected exit after establishment.
+    children[0].emit("exit", 1, null);
+    expect(tunnel.status()).toMatchObject({ running: false, url: null });
+    expect(events[0]).toMatch(/disconnect:cloudflared exited with code 1/);
+
+    // First restart attempt fires after the 1s backoff and restores the URL.
+    await vi.advanceTimersByTimeAsync(900);
+    expect(children.length).toBe(1); // backoff not elapsed yet
+    await vi.advanceTimersByTimeAsync(200);
+    expect(children.length).toBe(2); // respawn happened
+    announce(children[1]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    expect(events[1]).toBe(`reconnect:${NAMED_URL}`);
+    expect(tunnel.restartCount()).toBe(0);
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("backs off exponentially across consecutive restart failures", async () => {
+    vi.useFakeTimers();
+    const { tunnel, children } = makeNamed();
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Established connector dies: attempt 1 scheduled at +1s.
+    children[0].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(children.length).toBe(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(children.length).toBe(2); // respawn 1 spawned
+
+    // Respawn never registers and dies: attempt 2 scheduled at +2s.
+    children[1].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(children.length).toBe(2); // 1.5s < 2s backoff, no tight respawn loop
+    await vi.advanceTimersByTimeAsync(700);
+    expect(children.length).toBe(3); // respawn 2 after the 2s backoff
+    await tunnel.stop();
+    vi.useRealTimers();
+  });
+
+  it("does not resurrect after a deliberate stop", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const { tunnel, children } = makeNamed({
+      onDisconnect: (reason) => events.push(`disconnect:${reason}`),
+      onReconnect: (url) => events.push(`reconnect:${url}`),
+    });
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    await tunnel.stop();
+    expect(children[0].kill).toHaveBeenCalledWith("SIGTERM");
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(tunnel.status()).toMatchObject({ running: false, url: null });
+    expect(children.length).toBe(1); // no respawn ever
+    expect(events).toEqual([]);
+    vi.useRealTimers();
+  });
+
+  it("restart() replaces a hung connector even while it looks connected", async () => {
+    const { tunnel, children } = makeNamed();
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Simulate the alive-but-unhealthy case: provider thinks it is connected.
+    const hung = children[0];
+    const restarted = tunnel.restart(3333);
+    await flush(); // let stop() resolve so start() spawns the replacement
+    expect(hung.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(children.length).toBe(2);
+    announce(children[1]);
+    await expect(restarted).resolves.toBe(NAMED_URL);
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    await tunnel.stop();
+  });
+
+  it("clears a pending restart timer when a reconnect happened through another path", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const { tunnel, children } = makeNamed({
+      onReconnect: (url) => events.push(`reconnect:${url}`),
+    });
+    const starting = tunnel.start(3333);
+    announce(children[0]);
+    await expect(starting).resolves.toBe(NAMED_URL);
+
+    // Established connector dies: auto-restart scheduled at +1s...
+    children[0].emit("exit", 1, null);
+    // ...but an explicit restart() fixes it first (attempts reset to 0).
+    const restarted = tunnel.restart(3333);
+    await flush();
+    announce(children[1]);
+    await expect(restarted).resolves.toBe(NAMED_URL);
+    expect(events.filter((e) => e.startsWith("reconnect:")).length).toBe(0);
+    expect(tunnel.restartCount()).toBe(0);
+
+    // The stale auto-restart timer must not duplicate the reconnect.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(children.length).toBe(2); // no extra spawn
+    expect(tunnel.status()).toMatchObject({ running: true, url: NAMED_URL });
+    await tunnel.stop();
+    vi.useRealTimers();
   });
 });
 

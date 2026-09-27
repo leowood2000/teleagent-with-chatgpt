@@ -588,7 +588,14 @@ program
           if (!binaries.cloudflared) {
             report.tunnel = { ok: false, detail: "NEED_CLOUDFLARED" };
           } else {
-            const started = await adminFetch<TunnelStartResponse>(runtime, "POST", "/admin/tunnel/start", 90_000);
+            // If the provider still believes the tunnel is running (hung or
+            // edge-broken connector), /admin/tunnel/start is a no-op that
+            // returns the same stale URL. Force a real restart instead.
+            const route =
+              info.tunnel.running && currentUrl && !healthy
+                ? "/admin/tunnel/restart"
+                : "/admin/tunnel/start";
+            const started = await adminFetch<TunnelStartResponse>(runtime, "POST", route, 90_000);
             if (started.url) {
               const previousUrl = lastEndpoint?.publicUrl;
               currentUrl = started.url;
